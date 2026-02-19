@@ -17,6 +17,26 @@ Improvements
   results from synchronous Deferreds in tests.
   (Jelmer Vernooĳ, #546)
 
+* Add support for ``unittest.TestCase.subTest``. Failures are reported
+  individually while the entire test method is still treated as a single test.
+  (Stephen Finucane, #567)
+
+* Add ``testtools.matchers.test`` module providing a test harness for
+  users who write their own custom matchers.
+  (Stephen Finucane)
+
+Changes
+-------
+
+* Re-add compat helpers and helper modules that were accidentally removed
+  in a patch release, breaking API compatibility. These are now deprecated
+  and will be removed in a future major release.
+  (Stephen Finucane, #566)
+
+* ``typing-extensions`` is no longer required at runtime; it is only needed
+  for type checking.
+  (Jelmer Vernooĳ, Takashi Kajinami, #569, #571)
+
 2.8.3
 ~~~~~
 
