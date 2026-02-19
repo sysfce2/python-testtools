@@ -39,6 +39,7 @@ twisted = ["Twisted", "fixtures"]
 dev = [
     "ruff==0.14.11",
     "mypy>=1.0.0",
+    "typing-extensions;python_version<'3.11'",
 ]
 
 [tool.hatch.version]
