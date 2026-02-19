@@ -82,6 +82,8 @@ module = [
     # except tests (we're not sadists)
     "testtools.twistedsupport.*",
     "tests.*",
+    # NOTE(stephenfin): These are deprecated so we're not going to type them
+    "testtools.tests.helpers",
 ]
 disallow_untyped_calls = false
 disallow_untyped_defs = false
