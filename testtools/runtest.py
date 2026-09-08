@@ -184,6 +184,15 @@ class RunTest:
                     if getattr(self.case, "force_failure", None):
                         self._run_user(_raise_force_fail_error)
                         failed = True
+                    for subtest, err in getattr(self.case, "_subtest_failures", ()):
+                        add_subtest = getattr(self.result, "addSubTest", None)
+                        if add_subtest is not None:
+                            add_subtest(self.case, subtest, err)
+                        else:
+                            self.result.addFailure(self.case, err)
+                        failed = True
+                    for subtest, reason in getattr(self.case, "_subtest_skips", ()):
+                        self.result.addSkip(subtest, reason=reason)
                     if not failed:
                         self.result.addSuccess(
                             self.case, details=self.case.getDetails()
