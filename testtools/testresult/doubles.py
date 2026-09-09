@@ -50,17 +50,17 @@ LogEvent: TypeAlias = (
     | tuple[
         Literal["addError"],
         unittest.TestCase,
-        tuple[type, Exception, object] | dict[str, object] | None | object,
+        tuple[type, Exception, object] | dict[str, object] | object | None,
     ]
     | tuple[
         Literal["addFailure"],
         unittest.TestCase,
-        tuple[type, Exception, object] | dict[str, object] | None | object,
+        tuple[type, Exception, object] | dict[str, object] | object | None,
     ]
     | tuple[
         Literal["addExpectedFailure"],
         unittest.TestCase,
-        tuple[type, Exception, object] | dict[str, object] | None | object,
+        tuple[type, Exception, object] | dict[str, object] | object | None,
     ]
     | tuple[
         Literal["addSkip"],
