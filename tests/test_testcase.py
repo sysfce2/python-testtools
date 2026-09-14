@@ -51,6 +51,10 @@ from testtools.testresult.doubles import (
     LogEvent,
     TestResult,
 )
+from testtools.testresult.real import (
+    ExtendedToStreamDecorator,
+    StreamSummary,
+)
 
 from .helpers import (
     AsText,
@@ -2353,6 +2357,23 @@ class TestSubTest(TestCase):
         case.run(result)
         return result
 
+    def _outcomes(self, result, case):
+        """The (event name, subtest label) pairs from a run.
+
+        Labels are relative to ``case``'s own id, so that tests can assert on
+        the subtest description without depending on the enclosing qualname.
+        """
+        prefix = case.id()
+        outcomes = []
+        for event in result._events:
+            if event[0] in ("startTest", "stopTest"):
+                continue
+            reported = event[1].id()
+            if reported.startswith(prefix):
+                reported = reported[len(prefix) :].lstrip()
+            outcomes.append((event[0], reported))
+        return outcomes
+
     def test_passing_subtests(self):
         class Case(TestCase):
             def test_it(self):
@@ -2360,9 +2381,12 @@ class TestSubTest(TestCase):
                     with self.subTest(i=i):
                         self.assertEqual(i % 2, 0)
 
-        result = self._run_case(Case("test_it"))
-        self.assertIn("addSuccess", [e[0] for e in result._events])
-        self.assertEqual([], result.failures)
+        case = Case("test_it")
+        result = self._run_case(case)
+        self.assertEqual(
+            [("addSuccess", "")],
+            self._outcomes(result, case),
+        )
 
     def test_single_failure(self):
         class Case(TestCase):
@@ -2371,11 +2395,12 @@ class TestSubTest(TestCase):
                     with self.subTest(i=i):
                         self.assertEqual(i % 2, 0)
 
-        result = self._run_case(Case("test_it"))
-        self.assertNotIn("addSuccess", [e[0] for e in result._events])
-        self.assertEqual(1, len(result.failures))
-        subtest = result.failures[0][0]
-        self.assertIn("(i=1)", str(subtest))
+        case = Case("test_it")
+        result = self._run_case(case)
+        self.assertEqual(
+            [("addFailure", "(i=1)")],
+            self._outcomes(result, case),
+        )
 
     def test_multiple_failures(self):
         class Case(TestCase):
@@ -2384,16 +2409,14 @@ class TestSubTest(TestCase):
                     with self.subTest(i=i):
                         self.assertEqual(i % 2, 0)
 
-        result = self._run_case(Case("test_it"))
-        self.assertEqual(2, len(result.failures))
-        descriptions = [str(f[0]) for f in result.failures]
-        self.assertTrue(
-            any("(i=1)" in d for d in descriptions),
-            f"Expected a failure for (i=1), got {descriptions}",
-        )
-        self.assertTrue(
-            any("(i=3)" in d for d in descriptions),
-            f"Expected a failure for (i=3), got {descriptions}",
+        case = Case("test_it")
+        result = self._run_case(case)
+        self.assertEqual(
+            [
+                ("addFailure", "(i=1)"),
+                ("addFailure", "(i=3)"),
+            ],
+            self._outcomes(result, case),
         )
 
     def test_failure_continues_loop(self):
@@ -2418,11 +2441,12 @@ class TestSubTest(TestCase):
                 with self.subTest(msg="my label", x=42):
                     self.fail("boom")
 
-        result = self._run_case(Case("test_it"))
-        self.assertEqual(1, len(result.failures))
-        description = str(result.failures[0][0])
-        self.assertIn("[my label]", description)
-        self.assertIn("(x=42)", description)
+        case = Case("test_it")
+        result = self._run_case(case)
+        self.assertEqual(
+            [("addFailure", "[my label] (x=42)")],
+            self._outcomes(result, case),
+        )
 
     def test_multiple_params(self):
         class Case(TestCase):
@@ -2430,11 +2454,12 @@ class TestSubTest(TestCase):
                 with self.subTest(a=1, b="two"):
                     self.fail("boom")
 
-        result = self._run_case(Case("test_it"))
-        self.assertEqual(1, len(result.failures))
-        description = str(result.failures[0][0])
-        self.assertIn("a=1", description)
-        self.assertIn("b='two'", description)
+        case = Case("test_it")
+        result = self._run_case(case)
+        self.assertEqual(
+            [("addFailure", "(a=1, b='two')")],
+            self._outcomes(result, case),
+        )
 
     def test_no_params(self):
         class Case(TestCase):
@@ -2442,10 +2467,12 @@ class TestSubTest(TestCase):
                 with self.subTest():
                     self.fail("boom")
 
-        result = self._run_case(Case("test_it"))
-        self.assertEqual(1, len(result.failures))
-        description = str(result.failures[0][0])
-        self.assertIn("(<subtest>)", description)
+        case = Case("test_it")
+        result = self._run_case(case)
+        self.assertEqual(
+            [("addFailure", "(<subtest>)")],
+            self._outcomes(result, case),
+        )
 
     def test_nested_subtests(self):
         class Case(TestCase):
@@ -2456,16 +2483,16 @@ class TestSubTest(TestCase):
                             with self.subTest(b=b):
                                 self.assertEqual(a, b)
 
-        result = self._run_case(Case("test_it"))
-        self.assertEqual(4, len(result.failures))
-        descriptions = [str(f[0]) for f in result.failures]
-        self.assertTrue(
-            any("a=1" in d and "b=3" in d for d in descriptions),
-            f"Expected a failure with both a=1 and b=3, got {descriptions}",
-        )
-        self.assertTrue(
-            any("a=2" in d and "b=4" in d for d in descriptions),
-            f"Expected a failure with both a=2 and b=4, got {descriptions}",
+        case = Case("test_it")
+        result = self._run_case(case)
+        self.assertEqual(
+            [
+                ("addFailure", "(a=1, b=3)"),
+                ("addFailure", "(a=1, b=4)"),
+                ("addFailure", "(a=2, b=3)"),
+                ("addFailure", "(a=2, b=4)"),
+            ],
+            self._outcomes(result, case),
         )
 
     def test_skip_inside_subtest(self):
@@ -2482,9 +2509,186 @@ class TestSubTest(TestCase):
                         self.reached.append(i)
 
         case = Case("test_it")
-        self._run_case(case)
+        result = self._run_case(case)
         self.assertEqual([0, 2], case.reached)
-        self.assertEqual(1, len(case._subtest_skips))
+        # The skipped subtest is reported on its own; the parent is not
+        # additionally reported as a success.
+        self.assertEqual(
+            [("addSkip", "(i=1)")],
+            self._outcomes(result, case),
+        )
+
+    def test_skip_uses_custom_skip_exception(self):
+        class CustomSkip(Exception):
+            pass
+
+        class Case(TestCase):
+            skipException = CustomSkip
+
+            def test_it(self):
+                with self.subTest(i=1):
+                    self.skipTest("skip this one")
+
+        case = Case("test_it")
+        result = self._run_case(case)
+        self.assertEqual(
+            [("addSkip", "(i=1)")],
+            self._outcomes(result, case),
+        )
+
+    def test_error_is_reported_as_error(self):
+        class Case(TestCase):
+            def test_it(self):
+                with self.subTest(i=1):
+                    raise ValueError("boom")
+
+        case = Case("test_it")
+        result = self._run_case(case)
+        self.assertEqual(
+            [("addError", "(i=1)")],
+            self._outcomes(result, case),
+        )
+
+    def test_expected_failure_inside_subtest(self):
+        class Case(TestCase):
+            def test_it(self):
+                with self.subTest(i=1):
+                    self.expectFailure("known bug", self.assertEqual, 1, 2)
+
+        case = Case("test_it")
+        result = self._run_case(case)
+        self.assertEqual(
+            [("addExpectedFailure", "(i=1)")],
+            self._outcomes(result, case),
+        )
+
+    def test_details_are_reported_with_the_subtest(self):
+        class Case(TestCase):
+            def test_it(self):
+                with self.subTest(i=1):
+                    self.addDetail("clue", text_content("important diagnostic"))
+                    self.fail("boom")
+
+        case = Case("test_it")
+        result = self._run_case(case)
+        [(_, _, details)] = [e for e in result._events if e[0] == "addFailure"]
+        self.assertEqual("important diagnostic", details["clue"].as_text())
+
+    def test_details_do_not_leak_to_the_parent(self):
+        class Case(TestCase):
+            def test_it(self):
+                with self.subTest(i=1):
+                    self.addDetail("clue", text_content("subtest only"))
+                    self.fail("boom")
+                self.assertNotIn("clue", self.getDetails())
+
+        case = Case("test_it")
+        result = self._run_case(case)
+        self.assertEqual(
+            [("addFailure", "(i=1)")],
+            self._outcomes(result, case),
+        )
+
+    def test_multiple_exceptions_are_unpacked(self):
+        class Case(TestCase):
+            def test_it(self):
+                with self.subTest(i=1):
+                    raise MultipleExceptions(
+                        (ValueError, ValueError("one"), None),
+                        (KeyError, KeyError("two"), None),
+                    )
+
+        case = Case("test_it")
+        result = self._run_case(case)
+        self.assertEqual(
+            [
+                ("addError", "(i=1)"),
+                ("addError", "(i=1)"),
+            ],
+            self._outcomes(result, case),
+        )
+
+    def test_failfast_stops_at_first_failing_subtest(self):
+        class Case(TestCase):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.iterations = []
+
+            def test_it(self):
+                for i in range(4):
+                    with self.subTest(i=i):
+                        self.iterations.append(i)
+                        self.fail("boom")
+
+        case = Case("test_it")
+        result = ExtendedTestResult()
+        result.failfast = True
+        case.run(result)
+        self.assertEqual([0], case.iterations)
+        self.assertEqual(
+            [("addFailure", "(i=0)")],
+            self._outcomes(result, case),
+        )
+
+    def test_keyboard_interrupt_propagates(self):
+        class Case(TestCase):
+            def test_it(self):
+                with self.subTest(i=1):
+                    raise KeyboardInterrupt
+
+        self.assertRaises(KeyboardInterrupt, Case("test_it").run, ExtendedTestResult())
+
+    def test_subtest_is_not_runnable(self):
+        class Case(TestCase):
+            def test_it(self):
+                with self.subTest(i=1):
+                    self.fail("boom")
+
+        case = Case("test_it")
+        result = self._run_case(case)
+        [(_, subtest, _)] = [e for e in result._events if e[0] == "addFailure"]
+        self.assertRaises(NotImplementedError, subtest.runTest)
+
+    def test_stream_result_counts_one_test(self):
+        # A subtest outcome is attached to the parent test rather than
+        # opening a stream record of its own, as unittest does.
+        class Case(TestCase):
+            def test_it(self):
+                with self.subTest(i=1):
+                    self.fail("boom")
+
+        summary = StreamSummary()
+        decorator = ExtendedToStreamDecorator(summary)
+        decorator.startTestRun()
+        Case("test_it").run(decorator)
+        decorator.stopTestRun()
+        self.assertEqual(1, summary.testsRun)
+        self.assertEqual(False, summary.wasSuccessful())
+
+    def test_stream_result_counts_one_test_for_skip(self):
+        class Case(TestCase):
+            def test_it(self):
+                with self.subTest(i=1):
+                    self.skipTest("skip this one")
+
+        summary = StreamSummary()
+        decorator = ExtendedToStreamDecorator(summary)
+        decorator.startTestRun()
+        Case("test_it").run(decorator)
+        decorator.stopTestRun()
+        self.assertEqual(1, summary.testsRun)
+        self.assertEqual(True, summary.wasSuccessful())
+
+    def test_str_matches_unittest_format(self):
+        class Case(TestCase):
+            def test_it(self):
+                with self.subTest(i=1):
+                    self.fail("boom")
+
+        case = Case("test_it")
+        result = self._run_case(case)
+        [(_, subtest, _)] = [e for e in result._events if e[0] == "addFailure"]
+        self.assertEqual(f"{case} (i=1)", str(subtest))
 
 
 def test_suite():

@@ -125,6 +125,8 @@ class RunTest:
             self.case.__testtools_tb_locals__ = getattr(  # type: ignore[attr-defined]
                 result, "tb_locals", False
             )
+            # Let subTest report each subtest against this result as it runs.
+            self.case._subtest_result = result
             self._run_core()
             if self._exceptions:
                 # One or more caught exceptions, now trigger the test's
@@ -138,6 +140,7 @@ class RunTest:
                     self.last_resort(self.case, self.result, e)
                     raise e
         finally:
+            self.case._subtest_result = None
             result.stopTest(self.case)
         return result
 
@@ -184,16 +187,11 @@ class RunTest:
                     if getattr(self.case, "force_failure", None):
                         self._run_user(_raise_force_fail_error)
                         failed = True
-                    for subtest, err in getattr(self.case, "_subtest_failures", ()):
-                        add_subtest = getattr(self.result, "addSubTest", None)
-                        if add_subtest is not None:
-                            add_subtest(self.case, subtest, err)
-                        else:
-                            self.result.addFailure(self.case, err)
+                    if getattr(self.case, "_subtest_failed", False):
                         failed = True
-                    for subtest, reason in getattr(self.case, "_subtest_skips", ()):
-                        self.result.addSkip(subtest, reason=reason)
-                    if not failed:
+                    if not failed and not getattr(
+                        self.case, "_subtest_reported", False
+                    ):
                         self.result.addSuccess(
                             self.case, details=self.case.getDetails()
                         )

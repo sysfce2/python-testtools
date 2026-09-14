@@ -69,6 +69,12 @@ LogEvent: TypeAlias = (
     ]
     | tuple[Literal["addUnexpectedSuccess"], unittest.TestCase]
     | tuple[Literal["addUnexpectedSuccess"], unittest.TestCase, dict[str, object]]
+    | tuple[
+        Literal["addSubTest"],
+        unittest.TestCase,
+        unittest.TestCase,
+        tuple[type, Exception, object] | object | None,
+    ]
     | tuple[Literal["addDuration"], unittest.TestCase, float]
     | tuple[Literal["progress"], int, int]
     | tuple[Literal["tags"], Iterable[str], Iterable[str]]
@@ -123,6 +129,15 @@ class TestResult(LoggingBase, unittest.TestResult):
         self._events.append(("addUnexpectedSuccess", test))
         if self.failfast:
             self.stop()
+
+    def addSubTest(
+        self,
+        test: unittest.TestCase,
+        subtest: unittest.TestCase,
+        err: OptExcInfo | None,
+    ) -> None:
+        super().addSubTest(test, subtest, err)  # type: ignore[arg-type]
+        self._events.append(("addSubTest", test, subtest, err))
 
     def addDuration(self, test: unittest.TestCase, duration: float) -> None:
         self._events.append(("addDuration", test, duration))

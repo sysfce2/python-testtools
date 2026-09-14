@@ -100,14 +100,21 @@ class _ExpectedFailure(Exception):
     """
 
 
+class _SubTestAborted(Exception):
+    """Raised to abort a test whose result asked us to stop."""
+
+
 _subtest_msg_sentinel = object()
 
 
-class SubTest(unittest.TestCase):
+class _SubTest(unittest.TestCase):
     """Describes a single subTest iteration for failure reporting.
 
     Carries the message and parameters passed to ``subTest`` so that
     result objects can label each failure with its subTest context.
+
+    Like ``unittest.case._SubTest``, this is a description rather than a
+    runnable test: it has no test method and must not be run.
     """
 
     def __init__(
@@ -118,6 +125,9 @@ class SubTest(unittest.TestCase):
         self.failureException = test_case.failureException
         self._msg = msg
         self._params = params
+
+    def runTest(self) -> NoReturn:
+        raise NotImplementedError("_SubTest describes a subtest; it cannot be run")
 
     def _subDescription(self) -> str:
         parts: list[str] = []
@@ -135,7 +145,7 @@ class SubTest(unittest.TestCase):
         return self.test_case.shortDescription()
 
     def __str__(self) -> str:
-        return self.id()
+        return f"{self.test_case} {self._subDescription()}"
 
 
 # TypeVar for decorators
@@ -387,10 +397,12 @@ class TestCase(unittest.TestCase):
         # data from exceptions.
         self.__exception_handlers: list[Callable[[OptExcInfo], None]] = []
         # Passed to RunTest to map exceptions to result actions
+        # Handlers accept an optional details override, used to report a
+        # subtest against its own _SubTest rather than the parent test.
         self.exception_handlers: list[
             tuple[
                 type[BaseException],
-                Callable[[TestCase, TestResult, BaseException], None],
+                Callable[..., None],
             ]
         ] = [
             (self.skipException, self._report_skip),
@@ -417,9 +429,12 @@ class TestCase(unittest.TestCase):
         # force_failure is set by expectThat() on mismatch; must be
         # cleared so re-runs of the same test can succeed.
         self.force_failure: bool | None = None
-        self._subtest_failures: list[tuple[SubTest, ExcInfo]] = []
-        self._subtest_skips: list[tuple[SubTest, str]] = []
         self._subtest_params: dict[str, Any] = {}
+        # Set by RunTest for the duration of the run, so that subTest can
+        # report each subtest as it completes.
+        self._subtest_result: TestResult | None = None
+        self._subtest_failed: bool = False
+        self._subtest_reported: bool = False
 
     def __eq__(self, other: object) -> bool:
         eq = getattr(unittest.TestCase, "__eq__", None)
@@ -886,29 +901,63 @@ class TestCase(unittest.TestCase):
             handler(exc_info)
 
     @staticmethod
-    def _report_error(self: "TestCase", result: TestResult, err: BaseException) -> None:
-        result.addError(self, details=self.getDetails())
+    def _report_error(
+        self: "TestCase",
+        result: TestResult,
+        err: BaseException,
+        details: DetailsDict | None = None,
+    ) -> None:
+        result.addError(self, details=TestCase._report_details(self, details))
 
     @staticmethod
     def _report_expected_failure(
-        self: "TestCase", result: TestResult, err: BaseException
+        self: "TestCase",
+        result: TestResult,
+        err: BaseException,
+        details: DetailsDict | None = None,
     ) -> None:
-        result.addExpectedFailure(self, details=self.getDetails())
+        result.addExpectedFailure(self, details=TestCase._report_details(self, details))
 
     @staticmethod
     def _report_failure(
-        self: "TestCase", result: TestResult, err: BaseException
+        self: "TestCase",
+        result: TestResult,
+        err: BaseException,
+        details: DetailsDict | None = None,
     ) -> None:
-        result.addFailure(self, details=self.getDetails())
+        result.addFailure(self, details=TestCase._report_details(self, details))
 
     @staticmethod
-    def _report_skip(self: "TestCase", result: TestResult, err: BaseException) -> None:
+    def _report_skip(
+        self: "TestCase",
+        result: TestResult,
+        err: BaseException,
+        details: DetailsDict | None = None,
+    ) -> None:
         if err.args:
             reason = err.args[0]
         else:
             reason = "no reason given."
-        self._add_reason(reason)
-        result.addSkip(self, details=self.getDetails())
+        if details is None:
+            self._add_reason(reason)
+            result.addSkip(self, details=self.getDetails())
+        else:
+            details = dict(details)
+            details["reason"] = content.text_content(reason)
+            result.addSkip(self, details=details)
+
+    @staticmethod
+    def _report_details(
+        self: unittest.TestCase, details: DetailsDict | None
+    ) -> DetailsDict:
+        """Details to report an outcome with.
+
+        Subtests supply their own details; everything else reports the
+        details accumulated on the test itself.
+        """
+        if details is None:
+            return cast("TestCase", self).getDetails()
+        return dict(details)
 
     def _report_traceback(
         self, exc_info: OptExcInfo, tb_label: str = "traceback"
@@ -933,27 +982,85 @@ class TestCase(unittest.TestCase):
     def subTest(
         self, msg: object = _subtest_msg_sentinel, **params: Any
     ) -> Iterator[None]:
-        """Return a context manager for a subTest."""
+        """Return a context manager that reports a subtest independently.
+
+        Exceptions raised inside the block are reported against a
+        ``_SubTest`` describing ``msg`` and ``params``, and do not abort the
+        rest of the test method.
+        """
         merged_params = {**self._subtest_params, **params}
-        subtest = SubTest(self, msg, merged_params)
+        subtest = _SubTest(self, msg, merged_params)
         old_params, self._subtest_params = self._subtest_params, merged_params
+        # Details added inside the block belong to this subtest, not to the
+        # parent test, so report and then discard whatever it accumulated.
+        outer_details = dict(self.getDetails())
         try:
             yield
-        except SkipTest as e:
-            reason = str(e)
-            self._subtest_skips.append((subtest, reason))
-        except Exception:
-            # Inside except block, exc_info() is guaranteed to have non-None values
-            exc_info = sys.exc_info()
-            self._subtest_failures.append((subtest, exc_info))  # type: ignore[arg-type]
+        except BaseException:
+            # Inside except block, exc_info() is guaranteed to have non-None
+            # values.
+            exc_info = cast(ExcInfo, sys.exc_info())
+            if not self._report_subtest(subtest, exc_info, outer_details):
+                raise
         finally:
             self._subtest_params = old_params
 
+    def _report_subtest(
+        self, subtest: "_SubTest", exc_info: ExcInfo, outer_details: DetailsDict
+    ) -> bool:
+        """Report the outcome of a failed subtest.
+
+        :return: True if the exception was reported, False if it should
+            propagate (there is nothing to report to, or it is not an
+            exception this test knows how to handle).
+        """
+        result = self._subtest_result
+        if result is None:
+            return False
+        if exc_info[0] is MultipleExceptions:
+            for sub_exc_info in exc_info[1].args:
+                self._report_subtest(subtest, sub_exc_info, outer_details)
+            return True
+        for exc_class, handler in self.exception_handlers:
+            if isinstance(exc_info[1], exc_class):
+                break
+        else:
+            return False
+        details = self.getDetails()
+        try:
+            self.onException(exc_info, tb_label="traceback")
+            subtest_details = {
+                name: detail
+                for name, detail in details.items()
+                if name not in outer_details
+            }
+            handler(subtest, result, exc_info[1], subtest_details)
+            # A reported subtest outcome stands on its own; the parent must
+            # not also be reported as a success.
+            self._subtest_reported = True
+            if not isinstance(exc_info[1], self.skipException):
+                self._subtest_failed = True
+                # Match unittest: stop at the first failing subtest when the
+                # result asks us to.
+                if getattr(result, "shouldStop", False):
+                    raise _SubTestAborted from None
+        finally:
+            # Leave the parent's details as they were, so a subtest failure
+            # is not re-reported as part of the parent test.
+            details.clear()
+            details.update(outer_details)
+        return True
+
     @staticmethod
     def _report_unexpected_success(
-        self: "TestCase", result: TestResult, err: BaseException
+        self: "TestCase",
+        result: TestResult,
+        err: BaseException,
+        details: DetailsDict | None = None,
     ) -> None:
-        result.addUnexpectedSuccess(self, details=self.getDetails())
+        result.addUnexpectedSuccess(
+            self, details=TestCase._report_details(self, details)
+        )
 
     def run(self, result: TestResult | None = None) -> TestResult:  # type: ignore[override]
         self._reset()
@@ -1061,7 +1168,11 @@ class TestCase(unittest.TestCase):
         :param result: A testtools.TestResult to report activity to.
         :return: None.
         """
-        return self._get_test_method()()
+        try:
+            return self._get_test_method()()
+        except _SubTestAborted:
+            # A subtest already reported the failure that stopped the run.
+            return None
 
     def useFixture(self, fixture: "FixtureT") -> "FixtureT":
         """Use fixture in a test case.
