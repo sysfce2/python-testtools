@@ -6,6 +6,11 @@ Changes and improvements to testtools_, grouped by release.
 NEXT
 ~~~~
 
+Improvements
+------------
+* Add support for ``TestCase.subTest``, reporting each subtest with its own
+  parameters. (Cyril Roelandt, #317)
+
 2.9.1
 ~~~~~
 
