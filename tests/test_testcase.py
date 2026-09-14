@@ -2343,6 +2343,150 @@ class TestDecorateTestCaseResult(TestCase):
         self.assertRaises(AttributeError, getattr, orig, "thing")
 
 
+class TestSubTest(TestCase):
+    """Tests for testtools.TestCase.subTest support."""
+
+    run_test_with = FullStackRunTest
+
+    def _run_case(self, case):
+        result = ExtendedTestResult()
+        case.run(result)
+        return result
+
+    def test_passing_subtests(self):
+        class Case(TestCase):
+            def test_it(self):
+                for i in (0, 2, 4):
+                    with self.subTest(i=i):
+                        self.assertEqual(i % 2, 0)
+
+        result = self._run_case(Case("test_it"))
+        self.assertIn("addSuccess", [e[0] for e in result._events])
+        self.assertEqual([], result.failures)
+
+    def test_single_failure(self):
+        class Case(TestCase):
+            def test_it(self):
+                for i in (0, 1, 2):
+                    with self.subTest(i=i):
+                        self.assertEqual(i % 2, 0)
+
+        result = self._run_case(Case("test_it"))
+        self.assertNotIn("addSuccess", [e[0] for e in result._events])
+        self.assertEqual(1, len(result.failures))
+        subtest = result.failures[0][0]
+        self.assertIn("(i=1)", str(subtest))
+
+    def test_multiple_failures(self):
+        class Case(TestCase):
+            def test_it(self):
+                for i in range(4):
+                    with self.subTest(i=i):
+                        self.assertEqual(i % 2, 0)
+
+        result = self._run_case(Case("test_it"))
+        self.assertEqual(2, len(result.failures))
+        descriptions = [str(f[0]) for f in result.failures]
+        self.assertTrue(
+            any("(i=1)" in d for d in descriptions),
+            f"Expected a failure for (i=1), got {descriptions}",
+        )
+        self.assertTrue(
+            any("(i=3)" in d for d in descriptions),
+            f"Expected a failure for (i=3), got {descriptions}",
+        )
+
+    def test_failure_continues_loop(self):
+        class Case(TestCase):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.iterations = []
+
+            def test_it(self):
+                for i in range(4):
+                    with self.subTest(i=i):
+                        self.iterations.append(i)
+                        self.assertEqual(i % 2, 0)
+
+        case = Case("test_it")
+        self._run_case(case)
+        self.assertEqual([0, 1, 2, 3], case.iterations)
+
+    def test_with_msg(self):
+        class Case(TestCase):
+            def test_it(self):
+                with self.subTest(msg="my label", x=42):
+                    self.fail("boom")
+
+        result = self._run_case(Case("test_it"))
+        self.assertEqual(1, len(result.failures))
+        description = str(result.failures[0][0])
+        self.assertIn("[my label]", description)
+        self.assertIn("(x=42)", description)
+
+    def test_multiple_params(self):
+        class Case(TestCase):
+            def test_it(self):
+                with self.subTest(a=1, b="two"):
+                    self.fail("boom")
+
+        result = self._run_case(Case("test_it"))
+        self.assertEqual(1, len(result.failures))
+        description = str(result.failures[0][0])
+        self.assertIn("a=1", description)
+        self.assertIn("b='two'", description)
+
+    def test_no_params(self):
+        class Case(TestCase):
+            def test_it(self):
+                with self.subTest():
+                    self.fail("boom")
+
+        result = self._run_case(Case("test_it"))
+        self.assertEqual(1, len(result.failures))
+        description = str(result.failures[0][0])
+        self.assertIn("(<subtest>)", description)
+
+    def test_nested_subtests(self):
+        class Case(TestCase):
+            def test_it(self):
+                for a in (1, 2):
+                    with self.subTest(a=a):
+                        for b in (3, 4):
+                            with self.subTest(b=b):
+                                self.assertEqual(a, b)
+
+        result = self._run_case(Case("test_it"))
+        self.assertEqual(4, len(result.failures))
+        descriptions = [str(f[0]) for f in result.failures]
+        self.assertTrue(
+            any("a=1" in d and "b=3" in d for d in descriptions),
+            f"Expected a failure with both a=1 and b=3, got {descriptions}",
+        )
+        self.assertTrue(
+            any("a=2" in d and "b=4" in d for d in descriptions),
+            f"Expected a failure with both a=2 and b=4, got {descriptions}",
+        )
+
+    def test_skip_inside_subtest(self):
+        class Case(TestCase):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.reached = []
+
+            def test_it(self):
+                for i in range(3):
+                    with self.subTest(i=i):
+                        if i == 1:
+                            self.skipTest("skip this one")
+                        self.reached.append(i)
+
+        case = Case("test_it")
+        self._run_case(case)
+        self.assertEqual([0, 2], case.reached)
+        self.assertEqual(1, len(case._subtest_skips))
+
+
 def test_suite():
     from unittest import TestLoader
 

@@ -15,6 +15,7 @@ __all__ = [
     "unique_text_generator",
 ]
 
+import contextlib
 import copy
 import datetime
 import functools
@@ -97,6 +98,44 @@ class _ExpectedFailure(Exception):
     Note that this exception is private plumbing in testtools' testcase
     module.
     """
+
+
+_subtest_msg_sentinel = object()
+
+
+class SubTest(unittest.TestCase):
+    """Describes a single subTest iteration for failure reporting.
+
+    Carries the message and parameters passed to ``subTest`` so that
+    result objects can label each failure with its subTest context.
+    """
+
+    def __init__(
+        self, test_case: "TestCase", msg: object, params: dict[str, Any]
+    ) -> None:
+        super().__init__()
+        self.test_case = test_case
+        self.failureException = test_case.failureException
+        self._msg = msg
+        self._params = params
+
+    def _subDescription(self) -> str:
+        parts: list[str] = []
+        if self._msg is not _subtest_msg_sentinel:
+            parts.append(f"[{self._msg}]")
+        if self._params:
+            params_desc = ", ".join(f"{k}={v!r}" for k, v in self._params.items())
+            parts.append(f"({params_desc})")
+        return " ".join(parts) or "(<subtest>)"
+
+    def id(self) -> str:
+        return f"{self.test_case.id()} {self._subDescription()}"
+
+    def shortDescription(self) -> str | None:
+        return self.test_case.shortDescription()
+
+    def __str__(self) -> str:
+        return self.id()
 
 
 # TypeVar for decorators
@@ -378,6 +417,9 @@ class TestCase(unittest.TestCase):
         # force_failure is set by expectThat() on mismatch; must be
         # cleared so re-runs of the same test can succeed.
         self.force_failure: bool | None = None
+        self._subtest_failures: list[tuple[SubTest, ExcInfo]] = []
+        self._subtest_skips: list[tuple[SubTest, str]] = []
+        self._subtest_params: dict[str, Any] = {}
 
     def __eq__(self, other: object) -> bool:
         eq = getattr(unittest.TestCase, "__eq__", None)
@@ -886,6 +928,26 @@ class TestCase(unittest.TestCase):
                 capture_locals=getattr(self, "__testtools_tb_locals__", False),
             ),
         )
+
+    @contextlib.contextmanager
+    def subTest(
+        self, msg: object = _subtest_msg_sentinel, **params: Any
+    ) -> Iterator[None]:
+        """Return a context manager for a subTest."""
+        merged_params = {**self._subtest_params, **params}
+        subtest = SubTest(self, msg, merged_params)
+        old_params, self._subtest_params = self._subtest_params, merged_params
+        try:
+            yield
+        except SkipTest as e:
+            reason = str(e)
+            self._subtest_skips.append((subtest, reason))
+        except Exception:
+            # Inside except block, exc_info() is guaranteed to have non-None values
+            exc_info = sys.exc_info()
+            self._subtest_failures.append((subtest, exc_info))  # type: ignore[arg-type]
+        finally:
+            self._subtest_params = old_params
 
     @staticmethod
     def _report_unexpected_success(
